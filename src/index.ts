@@ -1,69 +1,91 @@
+import express, { Request, Response } from "express";
+import bodyParser from "body-parser";
 import { MeetingBaasClient } from "./meetingbaas";
 import { TranscriptionProxy } from "./proxy";
 import { createLogger } from "./utils";
 
-const logger = createLogger("Main");
+const logger = createLogger("Server");
 
-// Keep references to all our clients for cleanup
+const app = express();
+const port = 4000;
+
+app.use(bodyParser.json());
+
 let meetingBaasClient: MeetingBaasClient | null = null;
 let proxy: TranscriptionProxy | null = null;
 
-// Graceful shutdown handler
+// Register shutdown logic once
 function setupGracefulShutdown() {
   process.on("SIGINT", async () => {
     logger.info("Shutting down gracefully...");
 
-    // Disconnect from MeetingBaas (remove the bot from the meeting)
     if (meetingBaasClient) {
       logger.info("Telling bot to leave the meeting...");
       meetingBaasClient.disconnect();
     }
 
-    // Close Gladia connections (via proxy)
     if (proxy) {
-      logger.info("Closing transcription services...");
+      logger.info("Shutting down transcription proxy...");
       await proxy.shutdown();
     }
 
-    logger.info("Cleanup complete, exiting...");
+    logger.info("Cleanup complete. Exiting.");
     process.exit(0);
   });
 }
 
-async function main() {
+// Register the handler once when app starts
+setupGracefulShutdown();
+
+const startBotHandler = async (req: Request, res: Response): Promise<void> => {
+  const { meeting_id,meeting_url, bot_name, ngrok_url } = req.body;
+
+  if (!meeting_url || !bot_name || !ngrok_url) {
+    res.status(400).json({ error: "Missing required parameters" });
+    return;
+  }
+
   try {
     logger.info("Starting transcription system...");
 
-    // Create instances
-    proxy = new TranscriptionProxy();
+    //proxy = new TranscriptionProxy(meetingBaasClient.getBotId());
     meetingBaasClient = new MeetingBaasClient();
 
-    // Setup graceful shutdown
-    setupGracefulShutdown();
-
-    // Extract command line arguments
-    const args = process.argv.slice(2);
-    const meetingUrl = args[0] || "https://meet.google.com/your-meeting-id";
-    const botName = args[1] || "Transcription Bot";
-    const webhookUrl = args[2] || "ws://localhost:3000"; // Your proxy URL
-
-    // Connect the bot to the meeting
     const connected = await meetingBaasClient.connect(
-      meetingUrl,
-      botName,
-      webhookUrl
+      meeting_id,
+      meeting_url,
+      bot_name,
+      ngrok_url
     );
 
     if (!connected) {
       logger.error("Failed to connect to meeting");
-      process.exit(1);
+      res.status(500).json({ error: "Failed to connect to meeting" });
+      return;
     }
+    const botId = meetingBaasClient.getBotId();
+    if (!botId) {
+      logger.error("Bot ID is null after connecting");
+      res.status(500).json({ error: "Bot ID is missing after connection" });
+      return;
+    }
+    //logger.info(botId);
+    proxy = new TranscriptionProxy(botId);
 
-    logger.info("System initialized successfully");
+    logger.info("Bot started successfully");
+    res.status(200).json({ message: "Bot started successfully" });
   } catch (error) {
     logger.error("Error initializing system:", error);
-    process.exit(1);
+    res.status(500).json({ error: "Internal server error", details: error });
   }
-}
+};
 
-main();
+
+app.get("/", (req: Request, res: Response) => {
+  res.send("Hello World!");
+});
+app.post("/start-bot", startBotHandler);
+
+app.listen(port, () => {
+  logger.info(`Server listening on port ${port}`);
+});

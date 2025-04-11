@@ -16,7 +16,7 @@ export const botConfig = {
 // Proxy configuration
 export const proxyConfig = {
   host: process.env.PROXY_HOST || "0.0.0.0",
-  port: parseInt(process.env.PROXY_PORT || "8765"),
+  port: parseInt(process.env.PROXY_PORT || "4000"),
   botUrl: process.env.BOT_URL || "ws://localhost:8766",
   audioParams: {
     sampleRate: 24000,
@@ -26,8 +26,8 @@ export const proxyConfig = {
 
 // API keys
 export const apiKeys = {
-  meetingBaas: process.env.MEETING_BAAS_API_KEY || "",
-  gladia: process.env.GLADIA_API_KEY || "",
+  meetingBaas: process.env.MEETING_BAAS_API_KEY,
+  gladia: process.env.GLADIA_API_KEY,
 };
 
 // API URLs
