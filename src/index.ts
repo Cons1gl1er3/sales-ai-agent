@@ -1,23 +1,15 @@
-import { MeetingBaasClient } from "./meetingbaas";
 import { TranscriptionProxy } from "./proxy";
 import { createLogger } from "./utils";
 
 const logger = createLogger("Main");
 
 // Keep references to all our clients for cleanup
-let meetingBaasClient: MeetingBaasClient | null = null;
 let proxy: TranscriptionProxy | null = null;
 
 // Graceful shutdown handler
 function setupGracefulShutdown() {
   process.on("SIGINT", async () => {
     logger.info("Shutting down gracefully...");
-
-    // Disconnect from MeetingBaas (remove the bot from the meeting)
-    if (meetingBaasClient) {
-      logger.info("Telling bot to leave the meeting...");
-      meetingBaasClient.disconnect();
-    }
 
     // Close Gladia connections (via proxy)
     if (proxy) {
@@ -32,36 +24,20 @@ function setupGracefulShutdown() {
 
 async function main() {
   try {
-    logger.info("Starting transcription system...");
+    logger.info("Starting transcription proxy server...");
 
     // Create instances
     proxy = new TranscriptionProxy();
-    meetingBaasClient = new MeetingBaasClient();
 
     // Setup graceful shutdown
     setupGracefulShutdown();
 
-    // Extract command line arguments
-    const args = process.argv.slice(2);
-    const meetingUrl = args[0] || "https://meet.google.com/your-meeting-id";
-    const botName = args[1] || "Transcription Bot";
-    const webhookUrl = args[2] || "ws://localhost:3000"; // Your proxy URL
-
-    // Connect the bot to the meeting
-    const connected = await meetingBaasClient.connect(
-      meetingUrl,
-      botName,
-      webhookUrl
-    );
-
-    if (!connected) {
-      logger.error("Failed to connect to meeting");
-      process.exit(1);
-    }
-
-    logger.info("System initialized successfully");
+    logger.info("Transcription proxy server initialized successfully and listening for connections.");
+    // Keep the process alive until SIGINT
+    // The proxy server itself will handle incoming connections.
+    // No explicit connect logic is needed here anymore as that's handled by n8n.
   } catch (error) {
-    logger.error("Error initializing system:", error);
+    logger.error("Error initializing proxy server:", error);
     process.exit(1);
   }
 }

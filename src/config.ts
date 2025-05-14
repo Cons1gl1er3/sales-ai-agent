@@ -27,7 +27,6 @@ export const proxyConfig = {
 // API keys
 export const apiKeys = {
   meetingBaas: process.env.MEETING_BAAS_API_KEY || "",
-  gladia: process.env.GLADIA_API_KEY || "",
   openai: process.env.OPENAI_API_KEY || "",
 };
 
@@ -39,11 +38,6 @@ export const apiUrls = {
 
 if (!apiKeys.meetingBaas) {
   console.error("MEETING_BAAS_API_KEY is required");
-  process.exit(1);
-}
-
-if (!apiKeys.gladia) {
-  console.error("GLADIA_API_KEY is required");
   process.exit(1);
 }
 
