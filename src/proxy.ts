@@ -1,6 +1,6 @@
 import WebSocket from "ws";
 import { proxyConfig } from "./config";
-import { GladiaClient } from "./gladia";
+import { OpenAIClient } from "./openai";
 import { createLogger } from "./utils";
 
 const logger = createLogger("Proxy");
@@ -93,8 +93,8 @@ class TranscriptionProxy {
   private server: WebSocket.Server;
   private botClient: WebSocket | null = null;
   private meetingBaasClients: Set<WebSocket> = new Set();
-  private gladiaClient: GladiaClient;
-  private isGladiaSessionActive: boolean = false;
+  private openaiClient: OpenAIClient;
+  private isOpenAISessionActive: boolean = false;
   private lastSpeaker: string | null = null;
 
   constructor() {
@@ -104,10 +104,10 @@ class TranscriptionProxy {
       port: proxyConfig.port,
     });
 
-    this.gladiaClient = new GladiaClient();
+    this.openaiClient = new OpenAIClient();
 
     // Set up transcription callback
-    this.gladiaClient.onTranscription((text, isFinal) => {
+    this.openaiClient.onTranscription((text, isFinal) => {
       // Create a transcription message to send to the bot client
       const transcriptionMsg = {
         type: "transcription",
@@ -179,10 +179,10 @@ class TranscriptionProxy {
     logger.info("MeetingBaas client connected");
     this.meetingBaasClients.add(ws);
 
-    // Initialize Gladia session if not already active
-    if (!this.isGladiaSessionActive) {
-      this.gladiaClient.initSession().then((success) => {
-        this.isGladiaSessionActive = success;
+    // Initialize OpenAI session if not already active
+    if (!this.isOpenAISessionActive) {
+      this.openaiClient.initSession().then((success) => {
+        this.isOpenAISessionActive = success;
       });
     }
 
@@ -218,15 +218,13 @@ class TranscriptionProxy {
                 `New speaker: ${speakerInfo.name} (id: ${speakerInfo.id})`
               );
             }
-
-            // For other JSON messages, log as usual without speaker tracking
           } else {
             logger.info(`Message from MeetingBaas: ${inspectMessage(message)}`);
           }
         } catch {
-          // Likely audio data, send to Gladia for transcription
-          if (this.isGladiaSessionActive) {
-            this.gladiaClient.sendAudioChunk(message);
+          // Likely audio data, send to OpenAI for transcription
+          if (this.isOpenAISessionActive) {
+            this.openaiClient.sendAudioChunk(message);
           }
         }
       } else {
@@ -244,10 +242,10 @@ class TranscriptionProxy {
       logger.info("MeetingBaas client disconnected");
       this.meetingBaasClients.delete(ws);
 
-      // End Gladia session if last client disconnects
-      if (this.meetingBaasClients.size === 0 && this.isGladiaSessionActive) {
-        this.gladiaClient.endSession();
-        this.isGladiaSessionActive = false;
+      // End OpenAI session if last client disconnects
+      if (this.meetingBaasClients.size === 0 && this.isOpenAISessionActive) {
+        this.openaiClient.endSession();
+        this.isOpenAISessionActive = false;
       }
     });
 
@@ -257,11 +255,11 @@ class TranscriptionProxy {
   }
 
   public async shutdown(): Promise<void> {
-    // End the Gladia session if it's active
-    if (this.isGladiaSessionActive) {
-      logger.info("Ending Gladia transcription session...");
-      await this.gladiaClient.endSession();
-      this.isGladiaSessionActive = false;
+    // End the OpenAI session if it's active
+    if (this.isOpenAISessionActive) {
+      logger.info("Ending OpenAI transcription session...");
+      await this.openaiClient.endSession();
+      this.isOpenAISessionActive = false;
     }
 
     // Close all client connections

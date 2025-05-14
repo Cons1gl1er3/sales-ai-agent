@@ -1,8 +1,30 @@
 import WebSocket from "ws";
-import { apiKeys, botConfig } from "./config";
+import { apiKeys, botConfig, proxyConfig } from "./config";
 import { createLogger } from "./utils";
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
 
 const logger = createLogger("Bot");
+
+// Function to create a WAV header
+function getWavHeader(dataLength: number, sampleRate: number, numChannels: number, bitsPerSample: number): Buffer {
+  const buffer = Buffer.alloc(44);
+  buffer.write("RIFF", 0);
+  buffer.writeUInt32LE(36 + dataLength, 4); // ChunkSize
+  buffer.write("WAVE", 8);
+  buffer.write("fmt ", 12);
+  buffer.writeUInt32LE(16, 16); // Subchunk1Size (16 for PCM)
+  buffer.writeUInt16LE(1, 20); // AudioFormat (1 for PCM)
+  buffer.writeUInt16LE(numChannels, 22);
+  buffer.writeUInt32LE(sampleRate, 24);
+  buffer.writeUInt32LE(sampleRate * numChannels * (bitsPerSample / 8), 28); // ByteRate
+  buffer.writeUInt16LE(numChannels * (bitsPerSample / 8), 32); // BlockAlign
+  buffer.writeUInt16LE(bitsPerSample, 34);
+  buffer.write("data", 36);
+  buffer.writeUInt32LE(dataLength, 40); // Subchunk2Size
+  return buffer;
+}
 
 // Simple message types to replace protobufs
 interface AudioMessage {
@@ -35,25 +57,32 @@ type Message = AudioMessage | TranscriptionMessage | TextMessage;
 
 class TranscriptionBot {
   private server: WebSocket.Server;
-  private gladiaSocket: WebSocket | null = null;
   private proxyClient: WebSocket | null = null;
+  private audioBuffer: Buffer[] = [];
+  private isProcessing: boolean = false;
+  private processingInterval: NodeJS.Timeout | null = null;
+  private tempDir: string;
 
   constructor() {
     this.server = new WebSocket.Server({
       host: botConfig.host,
       port: botConfig.port,
     });
+    this.tempDir = path.join(os.tmpdir(), 'meeting-transcription-bot');
+    if (!fs.existsSync(this.tempDir)) {
+      fs.mkdirSync(this.tempDir, { recursive: true });
+    }
   }
 
   public async start() {
     logger.info(`Starting bot server on ${botConfig.host}:${botConfig.port}`);
 
+    // Start processing audio chunks every 5 seconds
+    this.processingInterval = setInterval(() => this.processAudioBuffer(), 5000);
+
     this.server.on("connection", (ws) => {
       logger.info("Proxy client connected");
       this.proxyClient = ws;
-
-      // Connect to Gladia's WebSocket API
-      this.connectToGladia();
 
       ws.on("message", (message) => {
         try {
@@ -72,11 +101,6 @@ class TranscriptionBot {
       ws.on("close", () => {
         logger.info("Proxy client disconnected");
         this.proxyClient = null;
-
-        // Close Gladia connection
-        if (this.gladiaSocket) {
-          this.gladiaSocket.close();
-        }
       });
 
       ws.on("error", (error) => {
@@ -85,102 +109,64 @@ class TranscriptionBot {
     });
   }
 
-  private connectToGladia() {
-    this.initGladiaStreamingSession()
-      .then((websocketUrl) => {
-        logger.info(`Connecting to Gladia WebSocket: ${websocketUrl}`);
-        this.gladiaSocket = new WebSocket(websocketUrl);
+  private async processAudioBuffer() {
+    if (this.isProcessing || this.audioBuffer.length === 0) return;
 
-        this.gladiaSocket.on("open", () => {
-          logger.info("Connected to Gladia WebSocket");
-        });
-
-        this.gladiaSocket.on("message", (data) => {
-          try {
-            const message = JSON.parse(data.toString());
-
-            // Process transcription messages from Gladia
-            if (message.type === "transcript") {
-              const transcriptionData = message.data;
-              const isPartial = !transcriptionData.is_final;
-
-              logger.info(
-                `Transcription ${isPartial ? "(partial)" : "(final)"}: ${
-                  transcriptionData.utterance.text
-                }`
-              );
-
-              // Send transcription to proxy client
-              if (
-                this.proxyClient &&
-                this.proxyClient.readyState === WebSocket.OPEN
-              ) {
-                const transcriptionMessage: TranscriptionMessage = {
-                  type: "transcription",
-                  data: {
-                    text: transcriptionData.utterance.text,
-                    isFinal: transcriptionData.is_final,
-                    startTime: transcriptionData.utterance.start || 0,
-                    endTime: transcriptionData.utterance.end || 0,
-                  },
-                };
-
-                this.proxyClient.send(JSON.stringify(transcriptionMessage));
-              }
-            }
-          } catch (error) {
-            logger.error("Error handling Gladia message:", error);
-          }
-        });
-
-        this.gladiaSocket.on("close", () => {
-          logger.info("Gladia WebSocket connection closed");
-        });
-
-        this.gladiaSocket.on("error", (error) => {
-          logger.error("Gladia WebSocket error:", error);
-        });
-      })
-      .catch((error) => {
-        logger.error("Failed to initialize Gladia streaming session:", error);
-      });
-  }
-
-  private async initGladiaStreamingSession(): Promise<string> {
+    this.isProcessing = true;
     try {
-      // Initialize a streaming session with Gladia
-      const response = await fetch("https://api.gladia.io/v2/live", {
-        method: "POST",
+      const rawAudioData = Buffer.concat(this.audioBuffer);
+      this.audioBuffer = []; // Clear the buffer
+
+      const sampleRate = proxyConfig.audioParams.sampleRate; // Or botConfig if more appropriate
+      const numChannels = proxyConfig.audioParams.channels;
+      const bitsPerSample = 16; // Assuming 16-bit audio
+
+      const wavHeader = getWavHeader(rawAudioData.length, sampleRate, numChannels, bitsPerSample);
+      const wavAudioData = Buffer.concat([wavHeader, rawAudioData]);
+
+      const tempFile = path.join(this.tempDir, `audio_${Date.now()}.wav`);
+      fs.writeFileSync(tempFile, wavAudioData);
+
+      const formData = new FormData();
+      formData.append('file', new Blob([fs.readFileSync(tempFile)], { type: 'audio/wav' }), 'audio.wav');
+      formData.append('model', 'whisper-1');
+      formData.append('response_format', 'json');
+
+      const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+        method: 'POST',
         headers: {
-          "Content-Type": "application/json",
-          "x-gladia-key": apiKeys.gladia || "",
+          'Authorization': `Bearer ${apiKeys.openai}`,
         },
-        body: JSON.stringify({
-          sample_rate: botConfig.audioParams.sampleRate,
-          encoding: "wav/pcm",
-          channels: botConfig.audioParams.channels,
-          language_config: {
-            languages: ["en"], // Use English language
-            code_switching: false,
-          },
-          messages_config: {
-            receive_partial_transcripts: true,
-            receive_final_transcripts: true,
-          },
-        }),
+        body: formData,
       });
+
+      fs.unlinkSync(tempFile);
 
       if (!response.ok) {
-        throw new Error(
-          `Failed to initialize Gladia session: ${response.statusText}`
-        );
+        const errorData = await response.json();
+        throw new Error(`OpenAI API error: ${JSON.stringify(errorData)}`);
       }
 
       const data = await response.json();
-      return data.url;
+      if (data.text) {
+        logger.info(`Transcription: ${data.text}`);
+        if (this.proxyClient && this.proxyClient.readyState === WebSocket.OPEN) {
+          const transcriptionMessage: TranscriptionMessage = {
+            type: "transcription",
+            data: {
+              text: data.text,
+              isFinal: true,
+              startTime: Date.now() - 5000,
+              endTime: Date.now(),
+            },
+          };
+          this.proxyClient.send(JSON.stringify(transcriptionMessage));
+        }
+      }
     } catch (error) {
-      logger.error("Error initializing Gladia session:", error);
-      throw error;
+      logger.error("Error processing audio with OpenAI:", error);
+    } finally {
+      this.isProcessing = false;
     }
   }
 
@@ -189,21 +175,50 @@ class TranscriptionBot {
     sampleRate: number;
     channels: number;
   }) {
-    if (this.gladiaSocket && this.gladiaSocket.readyState === WebSocket.OPEN) {
-      try {
-        // Send audio data to Gladia
-        const audioChunkAction = {
-          type: "audio_chunk",
-          data: {
-            chunk: audioData.audio, // Already base64 encoded
-          },
-        };
-
-        this.gladiaSocket.send(JSON.stringify(audioChunkAction));
-      } catch (error) {
-        logger.error("Error sending audio data to Gladia:", error);
-      }
+    try {
+      // Convert base64 audio to buffer and add to buffer
+      const audioBuffer = Buffer.from(audioData.audio, 'base64');
+      this.audioBuffer.push(audioBuffer);
+    } catch (error) {
+      logger.error("Error processing audio data:", error);
     }
+  }
+
+  public async shutdown(): Promise<void> {
+    // Clear the processing interval
+    if (this.processingInterval) {
+      clearInterval(this.processingInterval);
+      this.processingInterval = null;
+    }
+
+    // Process any remaining audio
+    if (this.audioBuffer.length > 0) {
+      await this.processAudioBuffer();
+    }
+
+    // Clean up temp directory
+    try {
+      const files = fs.readdirSync(this.tempDir);
+      for (const file of files) {
+        fs.unlinkSync(path.join(this.tempDir, file));
+      }
+      fs.rmdirSync(this.tempDir);
+    } catch (error) {
+      logger.error("Error cleaning up temp directory:", error);
+    }
+
+    // Close all client connections
+    if (this.proxyClient && this.proxyClient.readyState === WebSocket.OPEN) {
+      this.proxyClient.close();
+    }
+
+    // Close the WebSocket server
+    return new Promise((resolve) => {
+      this.server.close(() => {
+        logger.info("WebSocket server closed");
+        resolve();
+      });
+    });
   }
 }
 
