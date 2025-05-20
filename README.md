@@ -104,6 +104,38 @@ The application can be configured via the `src/config.ts` file or environment va
 - `PROXY_PORT`: Port for the proxy server (default: 3000)
 - `MEETING_BAAS_API_URL`: MeetingBaas API URL (default: https://api.meetingbaas.com)
 
+## Deployment to Railway
+
+1. Install the Railway CLI:
+   ```bash
+   npm i -g @railway/cli
+   ```
+
+2. Login to Railway:
+   ```bash
+   railway login
+   ```
+
+3. Initialize your project:
+   ```bash
+   railway init
+   ```
+
+4. Add your environment variables in the Railway dashboard:
+   - `MEETING_BAAS_API_KEY`
+   - `OPENAI_API_KEY`
+   - `PROXY_HOST` (set to 0.0.0.0)
+   - `PROXY_PORT` (set to 3000)
+
+5. Deploy your application:
+   ```bash
+   railway up
+   ```
+
+6. Your application will be deployed and Railway will provide you with a public URL. Use this URL instead of ngrok for your webhook endpoint.
+
+Note: Make sure to update your MeetingBaas webhook URL to point to your Railway deployment URL.
+
 ## License
 
 MIT

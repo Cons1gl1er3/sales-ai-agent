@@ -36,11 +36,6 @@ export const apiUrls = {
     process.env.MEETING_BAAS_API_URL || "https://api.meetingbaas.com",
 };
 
-if (!apiKeys.meetingBaas) {
-  console.error("MEETING_BAAS_API_KEY is required");
-  process.exit(1);
-}
-
 if (!apiKeys.openai) {
   console.error("OPENAI_API_KEY is required");
   process.exit(1);
